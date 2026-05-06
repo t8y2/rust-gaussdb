@@ -21,7 +21,7 @@ impl Client {
         Ok(Client { conn })
     }
 
-    pub async fn query(&mut self, sql: &str, _params: &[&dyn std::fmt::Display]) -> Result<Vec<Row>, Error> {
+    pub async fn query(&mut self, sql: &str, _params: &[&str]) -> Result<Vec<Row>, Error> {
         let msg = build_query_message(sql);
         self.conn.framed.send(FrontendMessage(msg)).await?;
 
