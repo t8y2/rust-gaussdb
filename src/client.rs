@@ -79,7 +79,8 @@ impl Client {
 
             match msg {
                 BackendMessage::CommandComplete { tag } => {
-                    if let Some(count) = tag.rsplit(' ').next().and_then(|s| s.parse::<u64>().ok()) {
+                    if let Some(count) = tag.rsplit(' ').next().and_then(|s| s.parse::<u64>().ok())
+                    {
                         affected = count;
                     }
                 }

@@ -60,7 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. SELECT all rows
     print!("6. SELECT * ... ");
-    let rows = client.query("SELECT id, name, score, active FROM rust_test ORDER BY id", &[]).await?;
+    let rows = client
+        .query(
+            "SELECT id, name, score, active FROM rust_test ORDER BY id",
+            &[],
+        )
+        .await?;
     assert_eq!(rows.len(), 5);
     println!("OK ({} rows)", rows.len());
 
@@ -217,7 +222,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 22. Large result set
     print!("22. Large result ... ");
-    client.execute("DROP TABLE IF EXISTS rust_test_large").await?;
+    client
+        .execute("DROP TABLE IF EXISTS rust_test_large")
+        .await?;
     client
         .execute("CREATE TABLE rust_test_large AS SELECT generate_series(1, 1000) AS id")
         .await?;
@@ -235,7 +242,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(encoding, Some("UTF8"));
     let version = client.server_parameter("server_version");
     assert!(version.is_some());
-    println!("OK (encoding={}, version={})", encoding.unwrap(), version.unwrap());
+    println!(
+        "OK (encoding={}, version={})",
+        encoding.unwrap(),
+        version.unwrap()
+    );
 
     // Cleanup
     print!("24. Cleanup ... ");

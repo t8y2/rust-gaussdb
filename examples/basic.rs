@@ -22,7 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {id}: {name} <{email}>");
     }
 
-    let affected = client.execute("UPDATE users SET name = 'Test' WHERE id = 999").await?;
+    let affected = client
+        .execute("UPDATE users SET name = 'Test' WHERE id = 999")
+        .await?;
     println!("\nAffected rows: {affected}");
 
     client.close().await?;

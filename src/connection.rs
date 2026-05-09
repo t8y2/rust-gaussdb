@@ -2,7 +2,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
-use crate::auth::{GaussAuthState, GAUSSDB_MD5_SHA256, GAUSSDB_SHA256};
+use crate::auth::{self, GaussAuthState, GAUSSDB_MD5_SHA256, GAUSSDB_SHA256};
 use crate::codec::*;
 use crate::config::Config;
 use crate::error::Error;
@@ -21,14 +21,23 @@ impl Connection {
         let stream = match &config.connect_timeout {
             Some(timeout) => tokio::time::timeout(*timeout, TcpStream::connect(&addr))
                 .await
-                .map_err(|_| Error::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out")))??,
+                .map_err(|_| {
+                    Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "connection timed out",
+                    ))
+                })??,
             None => TcpStream::connect(&addr).await?,
         };
 
         stream.set_nodelay(true)?;
         let mut framed = Framed::new(stream, PgCodec);
 
-        let startup = build_startup_message(&config.user, &config.dbname, config.application_name.as_deref());
+        let startup = build_startup_message(
+            &config.user,
+            &config.dbname,
+            config.application_name.as_deref(),
+        );
         framed.send(FrontendMessage(startup)).await?;
 
         let mut process_id = 0i32;
@@ -54,6 +63,23 @@ impl Connection {
                 }
                 BackendMessage::AuthenticationSasl { mechanisms } => {
                     authenticate_sasl(&mut framed, config, &mechanisms).await?;
+                }
+                BackendMessage::AuthenticationGaussdbSha256 {
+                    random64code,
+                    token,
+                    server_signature,
+                    server_iteration,
+                } => {
+                    let proof = auth::rfc5802_sha256(
+                        &config.password,
+                        &random64code,
+                        &token,
+                        server_signature.as_deref(),
+                        server_iteration,
+                    )
+                    .map_err(Error::Authentication)?;
+                    let msg = build_password_message(proof.as_bytes());
+                    framed.send(FrontendMessage(msg)).await?;
                 }
                 BackendMessage::ParameterStatus { name, value } => {
                     parameters.push((name, value));
@@ -119,7 +145,8 @@ async fn authenticate_scram_sha256(
     framed: &mut Framed<TcpStream, PgCodec>,
     config: &Config,
 ) -> Result<(), Error> {
-    let (mut state, initial_data) = GaussAuthState::new(&config.user, config.password.as_bytes(), "SCRAM-SHA-256");
+    let (mut state, initial_data) =
+        GaussAuthState::new(&config.user, config.password.as_bytes(), "SCRAM-SHA-256");
     let msg = build_sasl_initial_response("SCRAM-SHA-256", &initial_data);
     framed.send(FrontendMessage(msg)).await?;
 
@@ -140,7 +167,9 @@ async fn authenticate_scram_sha256(
 
     match framed.next().await {
         Some(Ok(BackendMessage::AuthenticationSaslFinal { data })) => {
-            state.process_server_final(&data).map_err(Error::Authentication)?;
+            state
+                .process_server_final(&data)
+                .map_err(Error::Authentication)?;
         }
         Some(Ok(BackendMessage::ErrorResponse { fields })) => {
             let msg = extract_error(&fields);
@@ -157,8 +186,9 @@ async fn authenticate_gaussdb_sasl(
     config: &Config,
     mechanism: &str,
 ) -> Result<(), Error> {
-    let (mut state, initial_data) = GaussAuthState::new(&config.user, config.password.as_bytes(), mechanism);
-    let msg = build_sasl_initial_response(mechanism, &initial_data);
+    let (mut state, initial_data) =
+        GaussAuthState::new(&config.user, config.password.as_bytes(), mechanism);
+    let msg = build_sasl_initial_response("SCRAM-SHA-256", &initial_data);
     framed.send(FrontendMessage(msg)).await?;
 
     let server_first = match framed.next().await {
@@ -178,7 +208,9 @@ async fn authenticate_gaussdb_sasl(
 
     match framed.next().await {
         Some(Ok(BackendMessage::AuthenticationSaslFinal { data })) => {
-            state.process_server_final(&data).map_err(Error::Authentication)?;
+            state
+                .process_server_final(&data)
+                .map_err(Error::Authentication)?;
         }
         Some(Ok(BackendMessage::AuthenticationOk)) => {}
         Some(Ok(BackendMessage::ErrorResponse { fields })) => {

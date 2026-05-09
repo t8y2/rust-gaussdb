@@ -7,17 +7,45 @@ pub struct PgCodec;
 pub enum BackendMessage {
     AuthenticationOk,
     AuthenticationCleartextPassword,
-    AuthenticationMd5Password { salt: [u8; 4] },
-    AuthenticationSasl { mechanisms: Vec<String> },
-    AuthenticationSaslContinue { data: Vec<u8> },
-    AuthenticationSaslFinal { data: Vec<u8> },
-    ParameterStatus { name: String, value: String },
-    BackendKeyData { process_id: i32, secret_key: i32 },
+    AuthenticationMd5Password {
+        salt: [u8; 4],
+    },
+    AuthenticationSasl {
+        mechanisms: Vec<String>,
+    },
+    AuthenticationSaslContinue {
+        data: Vec<u8>,
+    },
+    AuthenticationSaslFinal {
+        data: Vec<u8>,
+    },
+    AuthenticationGaussdbSha256 {
+        random64code: String,
+        token: String,
+        server_signature: Option<String>,
+        server_iteration: u32,
+    },
+    ParameterStatus {
+        name: String,
+        value: String,
+    },
+    BackendKeyData {
+        process_id: i32,
+        secret_key: i32,
+    },
     ReadyForQuery,
-    RowDescription { columns: Vec<ColumnDescription> },
-    DataRow { values: Vec<Option<Vec<u8>>> },
-    CommandComplete { tag: String },
-    ErrorResponse { fields: Vec<(u8, String)> },
+    RowDescription {
+        columns: Vec<ColumnDescription>,
+    },
+    DataRow {
+        values: Vec<Option<Vec<u8>>>,
+    },
+    CommandComplete {
+        tag: String,
+    },
+    ErrorResponse {
+        fields: Vec<(u8, String)>,
+    },
     NoticeResponse,
     EmptyQueryResponse,
     ParseComplete,
@@ -70,9 +98,7 @@ impl Decoder for PgCodec {
                     secret_key,
                 }))
             }
-            b'Z' => {
-                Ok(Some(BackendMessage::ReadyForQuery))
-            }
+            b'Z' => Ok(Some(BackendMessage::ReadyForQuery)),
             b'T' => decode_row_description(&mut body),
             b'D' => decode_data_row(&mut body),
             b'C' => {
@@ -97,9 +123,7 @@ impl Decoder for PgCodec {
             b'2' => Ok(Some(BackendMessage::BindComplete)),
             b'3' => Ok(Some(BackendMessage::CloseComplete)),
             b'n' => Ok(Some(BackendMessage::NoData)),
-            _ => {
-                Ok(None)
-            }
+            _ => Ok(None),
         }
     }
 }
@@ -115,15 +139,57 @@ fn decode_auth(body: &mut BytesMut) -> Result<Option<BackendMessage>, io::Error>
             Ok(Some(BackendMessage::AuthenticationMd5Password { salt }))
         }
         10 => {
-            let mut mechanisms = Vec::new();
-            loop {
-                let mech = read_cstr(body)?;
-                if mech.is_empty() {
-                    break;
+            if body.len() >= 4 && body[0] == 0 {
+                let password_stored_method = body.get_i32();
+                let remaining = body.len();
+                if (password_stored_method == 2 || password_stored_method == 0) && remaining >= 72 {
+                    let random64code = String::from_utf8_lossy(&body.split_to(64)).to_string();
+                    let token = String::from_utf8_lossy(&body.split_to(8)).to_string();
+                    let (server_signature, server_iteration) = if body.len() >= 64
+                        && body.len() < 68
+                    {
+                        // Old protocol: random64code(64) + token(8) + server_signature(64), iteration=10000
+                        let sig = String::from_utf8_lossy(&body.split_to(body.len())).to_string();
+                        (Some(sig), 10000u32)
+                    } else if body.len() == 4 {
+                        // New protocol (>=351): random64code(64) + token(8) + server_iteration(4)
+                        (None, body.get_i32() as u32)
+                    } else if body.len() >= 68 {
+                        // New protocol with signature: random64code(64) + token(8) + server_signature(64) + server_iteration(4)
+                        let sig = String::from_utf8_lossy(&body.split_to(64)).to_string();
+                        let iter = body.get_i32() as u32;
+                        (Some(sig), iter)
+                    } else {
+                        (None, 10000)
+                    };
+                    log::debug!("GaussDB SHA256 auth: iteration={server_iteration}");
+                    Ok(Some(BackendMessage::AuthenticationGaussdbSha256 {
+                        random64code,
+                        token,
+                        server_signature,
+                        server_iteration,
+                    }))
+                } else {
+                    let mechanism = match password_stored_method {
+                        2 => "SHA256".to_string(),
+                        3 => "MD5_SHA256".to_string(),
+                        other => format!("unknown({other})"),
+                    };
+                    Ok(Some(BackendMessage::AuthenticationSasl {
+                        mechanisms: vec![mechanism],
+                    }))
                 }
-                mechanisms.push(mech);
+            } else {
+                let mut mechanisms = Vec::new();
+                loop {
+                    let mech = read_cstr(body)?;
+                    if mech.is_empty() {
+                        break;
+                    }
+                    mechanisms.push(mech);
+                }
+                Ok(Some(BackendMessage::AuthenticationSasl { mechanisms }))
             }
-            Ok(Some(BackendMessage::AuthenticationSasl { mechanisms }))
         }
         11 => {
             let data = body.to_vec();
@@ -183,7 +249,10 @@ fn read_cstr(buf: &mut BytesMut) -> Result<String, io::Error> {
         buf.advance(pos + 1);
         Ok(s)
     } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "missing null terminator"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing null terminator",
+        ))
     }
 }
 
@@ -198,7 +267,11 @@ impl Encoder<FrontendMessage> for PgCodec {
     }
 }
 
-pub fn build_startup_message(user: &str, database: &str, application_name: Option<&str>) -> BytesMut {
+pub fn build_startup_message(
+    user: &str,
+    database: &str,
+    application_name: Option<&str>,
+) -> BytesMut {
     let mut params = BytesMut::new();
 
     params.extend_from_slice(b"user\0");

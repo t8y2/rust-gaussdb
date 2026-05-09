@@ -1,7 +1,7 @@
 //! GaussDB SHA256 SASL authentication implementation.
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -130,7 +130,10 @@ impl GaussAuthState {
                     } else if let Some(val) = part.strip_prefix("s=") {
                         salt_b64 = Some(val.to_string());
                     } else if let Some(val) = part.strip_prefix("i=") {
-                        iterations = Some(val.parse::<u32>().map_err(|e| format!("Bad iteration count: {e}"))?);
+                        iterations = Some(
+                            val.parse::<u32>()
+                                .map_err(|e| format!("Bad iteration count: {e}"))?,
+                        );
                     }
                 }
 
@@ -142,7 +145,9 @@ impl GaussAuthState {
                     return Err("Server nonce doesn't start with client nonce".to_string());
                 }
 
-                let salt = STANDARD.decode(&salt_b64).map_err(|e| format!("Bad salt base64: {e}"))?;
+                let salt = STANDARD
+                    .decode(&salt_b64)
+                    .map_err(|e| format!("Bad salt base64: {e}"))?;
 
                 let salted_password = if mechanism == GAUSSDB_MD5_SHA256 {
                     let pwd_str = std::str::from_utf8(&password).unwrap_or("");
@@ -159,8 +164,10 @@ impl GaussAuthState {
 
                 let channel_binding = "c=biws";
                 let client_final_without_proof = format!("{},r={}", channel_binding, server_nonce);
-                let auth_message =
-                    format!("{},{},{}", client_first_bare, server_first_str, client_final_without_proof);
+                let auth_message = format!(
+                    "{},{},{}",
+                    client_first_bare, server_first_str, client_final_without_proof
+                );
 
                 let client_signature = hmac_sha256(&stored_key, auth_message.as_bytes());
                 let mut proof = client_key;
@@ -193,7 +200,9 @@ impl GaussAuthState {
                     std::str::from_utf8(server_final).map_err(|e| format!("Invalid UTF-8: {e}"))?;
 
                 if let Some(verifier) = server_final_str.strip_prefix("v=") {
-                    let received = STANDARD.decode(verifier).map_err(|e| format!("Bad base64: {e}"))?;
+                    let received = STANDARD
+                        .decode(verifier)
+                        .map_err(|e| format!("Bad base64: {e}"))?;
                     if received != server_signature {
                         return Err("Server signature mismatch".to_string());
                     }
@@ -207,4 +216,66 @@ impl GaussAuthState {
             _ => Err("Unexpected state".to_string()),
         }
     }
+}
+
+/// openGauss RFC5802 challenge-response authentication.
+/// Single-round: server sends random+token, client computes proof and sends back.
+pub fn rfc5802_sha256(
+    password: &str,
+    random64code: &str,
+    token: &str,
+    server_signature_hex: Option<&str>,
+    server_iteration: u32,
+) -> Result<String, String> {
+    let salt = hex::decode(random64code).map_err(|e| format!("Bad random64code hex: {e}"))?;
+    let token_bytes = hex::decode(token).map_err(|e| format!("Bad token hex: {e}"))?;
+
+    let iteration = if let Some(expected_sig) = server_signature_hex {
+        detect_iteration(
+            password.as_bytes(),
+            &salt,
+            &token_bytes,
+            expected_sig,
+            server_iteration,
+        )?
+    } else {
+        server_iteration
+    };
+
+    let mut k = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(password.as_bytes(), &salt, iteration, &mut k);
+
+    // "Sever Key" is intentional (openGauss typo preserved for compatibility)
+    let client_key = hmac_sha256(&k, b"Client Key");
+    let stored_key = sha256(&client_key);
+
+    let hmac_result = hmac_sha256(&stored_key, &token_bytes);
+    let mut h = hmac_result;
+    for (a, b) in h.iter_mut().zip(client_key.iter()) {
+        *a ^= b;
+    }
+
+    Ok(hex::encode(h))
+}
+
+const CANDIDATE_ITERATIONS: &[u32] = &[10000, 2048];
+
+fn detect_iteration(
+    password: &[u8],
+    salt: &[u8],
+    token_bytes: &[u8],
+    expected_sig: &str,
+    default: u32,
+) -> Result<u32, String> {
+    for &iter in CANDIDATE_ITERATIONS {
+        let mut k = [0u8; 32];
+        pbkdf2::pbkdf2_hmac::<sha1::Sha1>(password, salt, iter, &mut k);
+        let server_key = hmac_sha256(&k, b"Sever Key");
+        let sig = hex::encode(hmac_sha256(&server_key, token_bytes));
+        if sig == expected_sig {
+            return Ok(iter);
+        }
+    }
+    // No candidate matched, fall back to default
+    Ok(default)
 }

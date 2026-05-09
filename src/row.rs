@@ -26,7 +26,11 @@ impl Row {
 
     pub fn get<T: FromSql>(&self, idx: usize) -> Result<T, Error> {
         let raw = self.values.get(idx).ok_or_else(|| {
-            Error::Protocol(format!("column index {} out of range ({})", idx, self.values.len()))
+            Error::Protocol(format!(
+                "column index {} out of range ({})",
+                idx,
+                self.values.len()
+            ))
         })?;
         T::from_sql(raw.as_deref())
     }
@@ -62,10 +66,11 @@ impl FromSql for String {
 impl FromSql for Option<String> {
     fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
         match raw {
-            Some(bytes) => Ok(Some(
-                String::from_utf8(bytes.to_vec())
-                    .map_err(|e| Error::Protocol(format!("invalid UTF-8: {e}")))?,
-            )),
+            Some(bytes) => {
+                Ok(Some(String::from_utf8(bytes.to_vec()).map_err(|e| {
+                    Error::Protocol(format!("invalid UTF-8: {e}"))
+                })?))
+            }
             None => Ok(None),
         }
     }
@@ -76,7 +81,8 @@ impl FromSql for i32 {
         match raw {
             Some(bytes) => {
                 let s = std::str::from_utf8(bytes).map_err(|e| Error::Protocol(e.to_string()))?;
-                s.parse().map_err(|e| Error::Protocol(format!("parse i32: {e}")))
+                s.parse()
+                    .map_err(|e| Error::Protocol(format!("parse i32: {e}")))
             }
             None => Err(Error::Protocol("unexpected NULL".into())),
         }
@@ -88,7 +94,8 @@ impl FromSql for i64 {
         match raw {
             Some(bytes) => {
                 let s = std::str::from_utf8(bytes).map_err(|e| Error::Protocol(e.to_string()))?;
-                s.parse().map_err(|e| Error::Protocol(format!("parse i64: {e}")))
+                s.parse()
+                    .map_err(|e| Error::Protocol(format!("parse i64: {e}")))
             }
             None => Err(Error::Protocol("unexpected NULL".into())),
         }
@@ -100,7 +107,8 @@ impl FromSql for f64 {
         match raw {
             Some(bytes) => {
                 let s = std::str::from_utf8(bytes).map_err(|e| Error::Protocol(e.to_string()))?;
-                s.parse().map_err(|e| Error::Protocol(format!("parse f64: {e}")))
+                s.parse()
+                    .map_err(|e| Error::Protocol(format!("parse f64: {e}")))
             }
             None => Err(Error::Protocol("unexpected NULL".into())),
         }

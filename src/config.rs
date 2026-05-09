@@ -25,13 +25,19 @@ impl Config {
             if let Some((key, value)) = part.split_once('=') {
                 match key {
                     "host" => host = value.to_string(),
-                    "port" => port = value.parse().map_err(|_| Error::Config("invalid port".into()))?,
+                    "port" => {
+                        port = value
+                            .parse()
+                            .map_err(|_| Error::Config("invalid port".into()))?
+                    }
                     "user" => user = value.to_string(),
                     "password" => password = value.to_string(),
                     "dbname" => dbname = value.to_string(),
                     "application_name" => application_name = Some(value.to_string()),
                     "connect_timeout" => {
-                        let secs: u64 = value.parse().map_err(|_| Error::Config("invalid timeout".into()))?;
+                        let secs: u64 = value
+                            .parse()
+                            .map_err(|_| Error::Config("invalid timeout".into()))?;
                         connect_timeout = Some(std::time::Duration::from_secs(secs));
                     }
                     _ => {}
