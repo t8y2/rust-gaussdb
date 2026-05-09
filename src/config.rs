@@ -48,6 +48,9 @@ impl Config {
         if user.is_empty() {
             return Err(Error::Config("user is required".into()));
         }
+        if dbname.is_empty() {
+            dbname = "postgres".to_string();
+        }
 
         Ok(Config {
             host,
@@ -58,5 +61,31 @@ impl Config {
             application_name,
             connect_timeout,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn defaults_dbname_to_postgres_when_omitted() {
+        let config = Config::parse("host=127.0.0.1 user=root password=secret").unwrap();
+
+        assert_eq!(config.dbname, "postgres");
+    }
+
+    #[test]
+    fn defaults_dbname_to_postgres_when_empty() {
+        let config = Config::parse("host=127.0.0.1 user=root password=secret dbname=").unwrap();
+
+        assert_eq!(config.dbname, "postgres");
+    }
+
+    #[test]
+    fn keeps_explicit_dbname() {
+        let config = Config::parse("host=127.0.0.1 user=root password=secret dbname=app").unwrap();
+
+        assert_eq!(config.dbname, "app");
     }
 }

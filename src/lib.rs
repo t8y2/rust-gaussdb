@@ -12,7 +12,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = Client::connect("host=127.0.0.1 port=5432 user=gaussdb password=Gauss@123 dbname=postgres").await?;
+//! let mut client = Client::connect("host=127.0.0.1 port=5432 user=gaussdb password=Gauss@123 dbname=postgres").await?;
 //!
 //! let rows = client.query("SELECT version()", &[]).await?;
 //! println!("{}", rows[0].get::<String>(0)?);
