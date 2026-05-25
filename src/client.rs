@@ -21,9 +21,15 @@ impl Client {
         Ok(Client { conn })
     }
 
-    /// Execute a simple query without parameters.
-    pub async fn query(&mut self, sql: &str, _params: &[&str]) -> Result<Vec<Row>, Error> {
-        self.query_simple(sql).await
+    /// Execute a query with string parameters.
+    /// Placeholders `$1`, `$2`, etc. are substituted with single-quoted, escaped values.
+    pub async fn query(&mut self, sql: &str, params: &[&str]) -> Result<Vec<Row>, Error> {
+        if params.is_empty() {
+            self.query_simple(sql).await
+        } else {
+            let escaped = substitute_str_params(sql, params);
+            self.query_simple(&escaped).await
+        }
     }
 
     /// Execute a query with typed parameters.
@@ -61,12 +67,106 @@ impl Client {
         Ok(())
     }
 
+    /// Subscribe to asynchronous notifications (LISTEN/NOTIFY).
+    pub fn subscribe_notifications(&self) -> tokio::sync::broadcast::Receiver<crate::connection::Notification> {
+        self.conn.subscribe_notifications()
+    }
+
+    /// Read one message from the server without issuing a query.
+    /// Useful for processing NOTIFY events between application queries.
+    /// Returns `true` if a message was read (including ReadyForQuery),
+    /// `false` if the connection is closed.
+    pub async fn poll(&mut self) -> Result<bool, Error> {
+        match self.conn.framed.next().await {
+            Some(msg) => {
+                let msg = msg?;
+                if let BackendMessage::NotificationResponse { pid, channel, payload } = msg {
+                    let _ = self.conn.notification_tx.send(
+                        crate::connection::Notification { pid, channel, payload },
+                    );
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Send a query cancellation request to the server.
+    /// This opens a separate TCP connection to deliver the cancel message.
+    pub async fn cancel(host: &str, port: u16, process_id: i32, secret_key: i32) -> Result<(), Error> {
+        let mut stream = tokio::net::TcpStream::connect(format!("{}:{}", host, port)).await?;
+        let mut buf = Vec::with_capacity(16);
+        buf.extend_from_slice(&16i32.to_be_bytes());
+        buf.extend_from_slice(&80877102i32.to_be_bytes());
+        buf.extend_from_slice(&process_id.to_be_bytes());
+        buf.extend_from_slice(&secret_key.to_be_bytes());
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &buf).await?;
+        Ok(())
+    }
+
+    /// Returns the backend process ID for cancellation.
+    pub fn process_id(&self) -> i32 { self.conn.process_id }
+    /// Returns the secret key for cancellation.
+    pub fn secret_key(&self) -> i32 { self.conn.secret_key }
+
     pub fn server_parameter(&self, name: &str) -> Option<&str> {
         self.conn
             .parameters
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.as_str())
+    }
+
+    /// Execute a query using the extended query protocol (Parse/Bind/Execute).
+    /// Parameters are sent as separate typed values, avoiding SQL injection.
+    pub async fn query_extended(&mut self, sql: &str, params: &[&dyn ToSql]) -> Result<Vec<Row>, Error> {
+        let param_oids: Vec<u32> = params.iter().map(|p| p.oid()).collect();
+        let param_values: Vec<Vec<u8>> = params.iter().map(|p| p.to_sql()).collect();
+        let param_refs: Vec<&[u8]> = param_values.iter().map(|v| v.as_slice()).collect();
+
+        self.conn.framed.send(FrontendMessage(build_parse_message("", sql, &param_oids))).await?;
+        self.conn.framed.send(FrontendMessage(build_bind_message("", "", &param_refs, &[0]))).await?;
+        self.conn.framed.send(FrontendMessage(build_describe_message(b'P', ""))).await?;
+        self.conn.framed.send(FrontendMessage(build_execute_message("", 0))).await?;
+        self.conn.framed.send(FrontendMessage(build_sync_message())).await?;
+        self.conn.framed.send(FrontendMessage(build_flush_message())).await?;
+
+        self.read_extended_results().await
+    }
+
+    async fn read_extended_results(&mut self) -> Result<Vec<Row>, Error> {
+        let mut columns = Vec::new();
+        let mut rows = Vec::new();
+
+        loop {
+            let msg = self.conn.framed.next().await
+                .ok_or_else(|| Error::Protocol("connection closed".into()))??;
+            match msg {
+                BackendMessage::ParseComplete => {}
+                BackendMessage::BindComplete => {}
+                BackendMessage::NoData => {}
+                BackendMessage::RowDescription { columns: cols } => {
+                    columns = cols;
+                }
+                BackendMessage::DataRow { values } => {
+                    rows.push(Row::new(columns.clone(), values));
+                }
+                BackendMessage::CommandComplete { .. } => {}
+                BackendMessage::ReadyForQuery => break,
+                BackendMessage::ErrorResponse { error } => {
+                    drain_until_ready(&mut self.conn).await;
+                    return Err(Error::Database(error));
+                }
+                BackendMessage::NoticeResponse => {}
+                BackendMessage::NotificationResponse { pid, channel, payload } => {
+                    let _ = self.conn.notification_tx.send(
+                        crate::connection::Notification { pid, channel, payload },
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(rows)
     }
 
     async fn query_simple(&mut self, sql: &str) -> Result<Vec<Row>, Error> {
@@ -99,6 +199,11 @@ impl Client {
                     return Err(Error::Database(error));
                 }
                 BackendMessage::NoticeResponse => {}
+                BackendMessage::NotificationResponse { pid, channel, payload } => {
+                    let _ = self.conn.notification_tx.send(
+                        crate::connection::Notification { pid, channel, payload },
+                    );
+                }
                 _ => {}
             }
         }
@@ -135,6 +240,11 @@ impl Client {
                 }
                 BackendMessage::RowDescription { .. } | BackendMessage::DataRow { .. } => {}
                 BackendMessage::NoticeResponse => {}
+                BackendMessage::NotificationResponse { pid, channel, payload } => {
+                    let _ = self.conn.notification_tx.send(
+                        crate::connection::Notification { pid, channel, payload },
+                    );
+                }
                 _ => {}
             }
         }
@@ -187,6 +297,17 @@ fn substitute_params(sql: &str, params: &[&dyn ToSql]) -> String {
                 }
             }
         };
+        result = result.replace(&placeholder, &escaped);
+    }
+    result
+}
+
+/// Substitute `$1`, `$2`, ... placeholders with single-quoted, escaped string values.
+fn substitute_str_params(sql: &str, params: &[&str]) -> String {
+    let mut result = sql.to_string();
+    for (i, param) in params.iter().enumerate().rev() {
+        let placeholder = format!("${}", i + 1);
+        let escaped = format!("'{}'", param.replace('\'', "''"));
         result = result.replace(&placeholder, &escaped);
     }
     result

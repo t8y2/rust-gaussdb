@@ -49,6 +49,11 @@ pub enum BackendMessage {
         error: DbError,
     },
     NoticeResponse,
+    NotificationResponse {
+        pid: i32,
+        channel: String,
+        payload: String,
+    },
     EmptyQueryResponse,
     ParseComplete,
     BindComplete,
@@ -119,6 +124,16 @@ impl Decoder for PgCodec {
                 }
                 let error = DbError::from_fields(&fields);
                 Ok(Some(BackendMessage::ErrorResponse { error }))
+            }
+            b'A' => {
+                let pid = body.get_i32();
+                let channel = read_cstr(&mut body)?;
+                let payload = read_cstr(&mut body)?;
+                Ok(Some(BackendMessage::NotificationResponse {
+                    pid,
+                    channel,
+                    payload,
+                }))
             }
             b'N' => Ok(Some(BackendMessage::NoticeResponse)),
             b'I' => Ok(Some(BackendMessage::EmptyQueryResponse)),
@@ -349,6 +364,104 @@ pub fn build_query_message(sql: &str) -> BytesMut {
 pub fn build_terminate_message() -> BytesMut {
     let mut buf = BytesMut::with_capacity(5);
     buf.put_u8(b'X');
+    buf.put_i32(4);
+    buf
+}
+
+// ---- Extended Query Protocol message builders ----
+
+pub fn build_parse_message(name: &str, query: &str, param_types: &[u32]) -> BytesMut {
+    let name_bytes = name.as_bytes();
+    let query_bytes = query.as_bytes();
+    let len = 4 + name_bytes.len() + 1 + query_bytes.len() + 1 + 2 + param_types.len() * 4;
+    let mut buf = BytesMut::with_capacity(1 + len);
+    buf.put_u8(b'P');
+    buf.put_i32(len as i32);
+    buf.extend_from_slice(name_bytes);
+    buf.put_u8(0);
+    buf.extend_from_slice(query_bytes);
+    buf.put_u8(0);
+    buf.put_i16(param_types.len() as i16);
+    for &oid in param_types {
+        buf.put_i32(oid as i32);
+    }
+    buf
+}
+
+pub fn build_bind_message(portal: &str, stmt: &str, params: &[&[u8]], result_formats: &[i16]) -> BytesMut {
+    let portal_bytes = portal.as_bytes();
+    let stmt_bytes = stmt.as_bytes();
+    let mut param_data = Vec::with_capacity(params.len() * 8);
+    for p in params {
+        if p.is_empty() {
+            param_data.extend_from_slice(&(-1i32).to_be_bytes());
+        } else {
+            param_data.extend_from_slice(&(p.len() as i32).to_be_bytes());
+            param_data.extend_from_slice(p);
+        }
+    }
+    let len = 4 + portal_bytes.len() + 1 + stmt_bytes.len() + 1
+        + 2 + params.len() * 2 // param format codes
+        + 2 // num params
+        + param_data.len()
+        + 2 + result_formats.len() * 2;
+    let mut buf = BytesMut::with_capacity(1 + len);
+    buf.put_u8(b'B');
+    buf.put_i32(len as i32);
+    buf.extend_from_slice(portal_bytes);
+    buf.put_u8(0);
+    buf.extend_from_slice(stmt_bytes);
+    buf.put_u8(0);
+    // Parameter format codes (0 = text)
+    buf.put_i16(params.len() as i16);
+    for _ in 0..params.len() {
+        buf.put_i16(0);
+    }
+    // Parameter values
+    buf.put_i16(params.len() as i16);
+    buf.extend_from_slice(&param_data);
+    // Result format codes (0 = text)
+    buf.put_i16(result_formats.len() as i16);
+    for &f in result_formats {
+        buf.put_i16(f);
+    }
+    buf
+}
+
+pub fn build_describe_message(ty: u8, name: &str) -> BytesMut {
+    let name_bytes = name.as_bytes();
+    let len = 4 + 1 + name_bytes.len() + 1;
+    let mut buf = BytesMut::with_capacity(1 + len);
+    buf.put_u8(b'D');
+    buf.put_i32(len as i32);
+    buf.put_u8(ty);
+    buf.extend_from_slice(name_bytes);
+    buf.put_u8(0);
+    buf
+}
+
+pub fn build_execute_message(portal: &str, max_rows: i32) -> BytesMut {
+    let portal_bytes = portal.as_bytes();
+    let len = 4 + portal_bytes.len() + 1 + 4;
+    let mut buf = BytesMut::with_capacity(1 + len);
+    buf.put_u8(b'E');
+    buf.put_i32(len as i32);
+    buf.extend_from_slice(portal_bytes);
+    buf.put_u8(0);
+    buf.put_i32(max_rows);
+    buf
+}
+
+pub fn build_sync_message() -> BytesMut {
+    let mut buf = BytesMut::with_capacity(5);
+    buf.put_u8(b'S');
+    buf.put_i32(4);
+    buf
+}
+
+pub fn build_flush_message() -> BytesMut {
+    let mut buf = BytesMut::with_capacity(5);
+    buf.put_u8(b'H');
     buf.put_i32(4);
     buf
 }

@@ -30,6 +30,8 @@ mod row;
 mod transaction;
 
 pub use client::{double_quote_identifier, quote_string, Client};
+pub use connection::Notification;
 pub use config::{Config, SslMode};
 pub use error::{DbError, Error};
 pub use row::{FromSql, Row, ToSql};
+pub use transaction::{AccessMode, IsolationLevel, Savepoint, Transaction, TransactionOptions};

@@ -5,6 +5,8 @@ pub enum SslMode {
     Disable,
     Prefer,
     Require,
+    VerifyCa,
+    VerifyFull,
 }
 
 #[derive(Debug, Clone)]
@@ -17,6 +19,9 @@ pub struct Config {
     pub application_name: Option<String>,
     pub connect_timeout: Option<std::time::Duration>,
     pub ssl_mode: SslMode,
+    pub ssl_root_cert: Option<String>,
+    pub ssl_cert: Option<String>,
+    pub ssl_key: Option<String>,
 }
 
 impl Default for Config {
@@ -30,6 +35,9 @@ impl Default for Config {
             application_name: None,
             connect_timeout: None,
             ssl_mode: SslMode::Prefer,
+            ssl_root_cert: None,
+            ssl_cert: None,
+            ssl_key: None,
         }
     }
 }
@@ -37,6 +45,51 @@ impl Default for Config {
 impl Config {
     pub fn new() -> Self {
         Config::default()
+    }
+
+    /// Fill missing values from environment variables (PGHOST, PGPORT, etc.).
+    pub fn apply_env(&mut self) {
+        if self.host == "127.0.0.1" {
+            if let Ok(v) = std::env::var("PGHOST") { self.host = v; }
+        }
+        if self.port == 5432 {
+            if let Ok(v) = std::env::var("PGPORT") {
+                if let Ok(p) = v.parse() { self.port = p; }
+            }
+        }
+        if self.user.is_empty() {
+            if let Ok(v) = std::env::var("PGUSER") { self.user = v; }
+        }
+        if self.password.is_empty() {
+            if let Ok(v) = std::env::var("PGPASSWORD") { self.password = v; }
+        }
+        if self.dbname == "postgres" {
+            if let Ok(v) = std::env::var("PGDATABASE") { self.dbname = v; }
+        }
+        if self.application_name.is_none() {
+            if let Ok(v) = std::env::var("PGAPPNAME") { self.application_name = Some(v); }
+        }
+        if self.connect_timeout.is_none() {
+            if let Ok(v) = std::env::var("PGCONNECT_TIMEOUT") {
+                if let Ok(s) = v.parse() {
+                    self.connect_timeout = Some(std::time::Duration::from_secs(s));
+                }
+            }
+        }
+        if self.ssl_mode == SslMode::Prefer {
+            if let Ok(v) = std::env::var("PGSSLMODE") {
+                if let Ok(m) = parse_sslmode(&v) { self.ssl_mode = m; }
+            }
+        }
+        if self.ssl_root_cert.is_none() {
+            if let Ok(v) = std::env::var("PGSSLROOTCERT") { self.ssl_root_cert = Some(v); }
+        }
+        if self.ssl_cert.is_none() {
+            if let Ok(v) = std::env::var("PGSSLCERT") { self.ssl_cert = Some(v); }
+        }
+        if self.ssl_key.is_none() {
+            if let Ok(v) = std::env::var("PGSSLKEY") { self.ssl_key = Some(v); }
+        }
     }
 
     pub fn parse(s: &str) -> Result<Self, Error> {
@@ -117,6 +170,9 @@ impl Config {
                         "sslmode" => {
                             config.ssl_mode = parse_sslmode(v)?;
                         }
+                        "sslrootcert" => config.ssl_root_cert = Some(percent_decode(v)?),
+                        "sslcert" => config.ssl_cert = Some(percent_decode(v)?),
+                        "sslkey" => config.ssl_key = Some(percent_decode(v)?),
                         _ => {}
                     }
                 }
@@ -161,6 +217,9 @@ impl Config {
                     "sslmode" => {
                         config.ssl_mode = parse_sslmode(value)?;
                     }
+                    "sslrootcert" => config.ssl_root_cert = Some(value.to_string()),
+                    "sslcert" => config.ssl_cert = Some(value.to_string()),
+                    "sslkey" => config.ssl_key = Some(value.to_string()),
                     _ => {}
                 }
             }
@@ -244,6 +303,8 @@ fn parse_sslmode(s: &str) -> Result<SslMode, Error> {
         "disable" => Ok(SslMode::Disable),
         "prefer" => Ok(SslMode::Prefer),
         "require" => Ok(SslMode::Require),
+        "verify-ca" => Ok(SslMode::VerifyCa),
+        "verify-full" => Ok(SslMode::VerifyFull),
         _ => Err(Error::Config(format!("invalid sslmode: {}", s))),
     }
 }

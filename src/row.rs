@@ -86,6 +86,28 @@ impl FromSql for Option<String> {
     }
 }
 
+impl FromSql for i16 {
+    fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+        match raw {
+            Some(bytes) => {
+                let s = std::str::from_utf8(bytes).map_err(|e| Error::Protocol(e.to_string()))?;
+                s.parse()
+                    .map_err(|e| Error::Protocol(format!("parse i16: {e}")))
+            }
+            None => Err(Error::Protocol("unexpected NULL".into())),
+        }
+    }
+}
+
+impl FromSql for Option<i16> {
+    fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+        match raw {
+            Some(_) => i16::from_sql(raw).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
 impl FromSql for i32 {
     fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
         match raw {
@@ -225,6 +247,15 @@ impl ToSql for &str {
     }
 }
 
+impl ToSql for i16 {
+    fn to_sql(&self) -> Vec<u8> {
+        self.to_string().into_bytes()
+    }
+    fn oid(&self) -> u32 {
+        21 // INT2OID
+    }
+}
+
 impl ToSql for i32 {
     fn to_sql(&self) -> Vec<u8> {
         self.to_string().into_bytes()
@@ -291,6 +322,147 @@ impl ToSql for Vec<u8> {
     }
     fn oid(&self) -> u32 {
         17 // BYTEAOID
+    }
+}
+
+// ---- Feature-gated FromSql implementations ----
+
+#[cfg(feature = "chrono")]
+mod chrono_impls {
+    use super::*;
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+
+    macro_rules! impl_from_sql_text {
+        ($ty:ty, $name:expr) => {
+            impl FromSql for $ty {
+                fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+                    match raw {
+                        Some(bytes) => {
+                            let s = std::str::from_utf8(bytes)
+                                .map_err(|e| Error::Protocol(e.to_string()))?;
+                            s.parse()
+                                .map_err(|e| Error::Protocol(format!("parse {}: {}", $name, e)))
+                        }
+                        None => Err(Error::Protocol("unexpected NULL".into())),
+                    }
+                }
+            }
+            impl FromSql for Option<$ty> {
+                fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+                    match raw {
+                        Some(_) => <$ty>::from_sql(raw).map(Some),
+                        None => Ok(None),
+                    }
+                }
+            }
+        };
+    }
+
+    impl_from_sql_text!(NaiveDate, "NaiveDate");
+    impl_from_sql_text!(NaiveTime, "NaiveTime");
+    impl_from_sql_text!(NaiveDateTime, "NaiveDateTime");
+
+    impl FromSql for DateTime<Utc> {
+        fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+            match raw {
+                Some(bytes) => {
+                    let s = std::str::from_utf8(bytes)
+                        .map_err(|e| Error::Protocol(e.to_string()))?;
+                    // Try RFC 3339 first (timestamptz), then NaiveDateTime parse (timestamp)
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                        return Ok(dt.with_timezone(&Utc));
+                    }
+                    let ndt: NaiveDateTime = s
+                        .parse()
+                        .map_err(|e| Error::Protocol(format!("parse DateTime<Utc>: {}", e)))?;
+                    Ok(Utc.from_utc_datetime(&ndt))
+                }
+                None => Err(Error::Protocol("unexpected NULL".into())),
+            }
+        }
+    }
+
+    impl FromSql for Option<DateTime<Utc>> {
+        fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+            match raw {
+                Some(_) => DateTime::<Utc>::from_sql(raw).map(Some),
+                None => Ok(None),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "uuid")]
+mod uuid_impls {
+    use super::*;
+    use uuid::Uuid;
+
+    impl FromSql for Uuid {
+        fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+            match raw {
+                Some(bytes) => {
+                    let s = std::str::from_utf8(bytes)
+                        .map_err(|e| Error::Protocol(e.to_string()))?;
+                    Uuid::parse_str(s)
+                        .map_err(|e| Error::Protocol(format!("parse UUID: {}", e)))
+                }
+                None => Err(Error::Protocol("unexpected NULL".into())),
+            }
+        }
+    }
+
+    impl FromSql for Option<Uuid> {
+        fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+            match raw {
+                Some(_) => Uuid::from_sql(raw).map(Some),
+                None => Ok(None),
+            }
+        }
+    }
+
+    impl ToSql for Uuid {
+        fn to_sql(&self) -> Vec<u8> {
+            self.to_string().into_bytes()
+        }
+        fn oid(&self) -> u32 {
+            2950 // UUIDOID
+        }
+    }
+}
+
+#[cfg(feature = "with-json")]
+mod json_impls {
+    use super::*;
+    use serde_json::Value;
+
+    impl FromSql for Value {
+        fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+            match raw {
+                Some(bytes) => serde_json::from_slice(bytes)
+                    .map_err(|e| Error::Protocol(format!("parse JSON: {}", e))),
+                None => Ok(Value::Null),
+            }
+        }
+    }
+
+    impl FromSql for Option<Value> {
+        fn from_sql(raw: Option<&[u8]>) -> Result<Self, Error> {
+            match raw {
+                Some(bytes) => serde_json::from_slice(bytes)
+                    .map(Some)
+                    .map_err(|e| Error::Protocol(format!("parse JSON: {}", e))),
+                None => Ok(None),
+            }
+        }
+    }
+
+    impl ToSql for Value {
+        fn to_sql(&self) -> Vec<u8> {
+            self.to_string().into_bytes()
+        }
+        fn oid(&self) -> u32 {
+            3802 // JSONBOID
+        }
     }
 }
 

@@ -10,6 +10,13 @@ use crate::codec::*;
 use crate::config::{Config, SslMode};
 use crate::error::Error;
 
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub pid: i32,
+    pub channel: String,
+    pub payload: String,
+}
+
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
 
@@ -22,6 +29,13 @@ pub struct Connection {
     #[allow(dead_code)]
     pub(crate) secret_key: i32,
     pub(crate) parameters: Vec<(String, String)>,
+    pub(crate) notification_tx: tokio::sync::broadcast::Sender<Notification>,
+}
+
+impl Connection {
+    pub fn subscribe_notifications(&self) -> tokio::sync::broadcast::Receiver<Notification> {
+        self.notification_tx.subscribe()
+    }
 }
 
 impl Connection {
@@ -122,6 +136,7 @@ impl Connection {
             process_id,
             secret_key,
             parameters,
+            notification_tx: tokio::sync::broadcast::channel(16).0,
         })
     }
 }
@@ -145,10 +160,42 @@ async fn tls_handshake(stream: TcpStream, config: &Config) -> Result<BoxedStream
         b'S' => {
             #[cfg(feature = "tls")]
             {
-                let tls_connector = native_tls::TlsConnector::builder()
-                    .danger_accept_invalid_certs(true)
-                    .build()
-                    .map_err(|e| Error::Tls(e.to_string()))?;
+                let mut builder = native_tls::TlsConnector::builder();
+
+                let verify = matches!(config.ssl_mode, SslMode::VerifyCa | SslMode::VerifyFull);
+                if !verify {
+                    builder.danger_accept_invalid_certs(true);
+                }
+
+                // Load custom CA certificate if provided
+                if let Some(ref root_cert_path) = config.ssl_root_cert {
+                    let cert_data = std::fs::read(root_cert_path)
+                        .map_err(|e| Error::Tls(format!("failed to read sslrootcert: {}", e)))?;
+                    let cert = native_tls::Certificate::from_pem(&cert_data)
+                        .or_else(|_| native_tls::Certificate::from_der(&cert_data))
+                        .map_err(|e| Error::Tls(format!("failed to parse sslrootcert: {}", e)))?;
+                    builder.add_root_certificate(cert);
+                }
+
+                // Load client certificate if provided
+                if let Some(ref ssl_cert_path) = config.ssl_cert {
+                    let cert_data = std::fs::read(ssl_cert_path)
+                        .map_err(|e| Error::Tls(format!("failed to read sslcert: {}", e)))?;
+                    let identity = if let Some(ref ssl_key_path) = config.ssl_key {
+                        let key_data = std::fs::read(ssl_key_path)
+                            .map_err(|e| Error::Tls(format!("failed to read sslkey: {}", e)))?;
+                        native_tls::Identity::from_pkcs8(&cert_data, &key_data)
+                            .or_else(|_| native_tls::Identity::from_pkcs12(&cert_data, ""))
+                            .map_err(|e| Error::Tls(format!("failed to load client cert: {}", e)))?
+                    } else {
+                        native_tls::Identity::from_pkcs12(&cert_data, "")
+                            .or_else(|_| native_tls::Identity::from_pkcs8(&cert_data, b""))
+                            .map_err(|e| Error::Tls(format!("failed to load client cert: {}", e)))?
+                    };
+                    builder.identity(identity);
+                }
+
+                let tls_connector = builder.build().map_err(|e| Error::Tls(e.to_string()))?;
                 let tls_connector: tokio_native_tls::TlsConnector = tls_connector.into();
                 let domain = config.host.clone();
                 let tls_stream = tls_connector

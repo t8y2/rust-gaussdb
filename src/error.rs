@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DbError {
     pub severity: String,
     pub code: String,
@@ -8,37 +8,45 @@ pub struct DbError {
     pub detail: Option<String>,
     pub hint: Option<String>,
     pub position: Option<String>,
+    pub internal_position: Option<String>,
+    pub internal_query: Option<String>,
+    pub where_: Option<String>,
+    pub schema_name: Option<String>,
+    pub table_name: Option<String>,
+    pub column_name: Option<String>,
+    pub data_type_name: Option<String>,
+    pub constraint_name: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<String>,
+    pub routine: Option<String>,
 }
 
 impl DbError {
     pub fn from_fields(fields: &[(u8, String)]) -> Self {
-        let mut severity = String::new();
-        let mut code = String::new();
-        let mut message = String::new();
-        let mut detail = None;
-        let mut hint = None;
-        let mut position = None;
-
+        let mut err = DbError::default();
         for &(field_type, ref value) in fields {
             match field_type {
-                b'S' => severity = value.clone(),
-                b'C' => code = value.clone(),
-                b'M' => message = value.clone(),
-                b'D' => detail = Some(value.clone()),
-                b'H' => hint = Some(value.clone()),
-                b'P' => position = Some(value.clone()),
+                b'S' => err.severity = value.clone(),
+                b'C' => err.code = value.clone(),
+                b'M' => err.message = value.clone(),
+                b'D' => err.detail = Some(value.clone()),
+                b'H' => err.hint = Some(value.clone()),
+                b'P' => err.position = Some(value.clone()),
+                b'p' => err.internal_position = Some(value.clone()),
+                b'q' => err.internal_query = Some(value.clone()),
+                b'W' => err.where_ = Some(value.clone()),
+                b's' => err.schema_name = Some(value.clone()),
+                b't' => err.table_name = Some(value.clone()),
+                b'c' => err.column_name = Some(value.clone()),
+                b'd' => err.data_type_name = Some(value.clone()),
+                b'n' => err.constraint_name = Some(value.clone()),
+                b'F' => err.file = Some(value.clone()),
+                b'L' => err.line = Some(value.clone()),
+                b'R' => err.routine = Some(value.clone()),
                 _ => {}
             }
         }
-
-        DbError {
-            severity,
-            code,
-            message,
-            detail,
-            hint,
-            position,
-        }
+        err
     }
 }
 
@@ -50,6 +58,13 @@ impl fmt::Display for DbError {
         }
         if let Some(ref hint) = self.hint {
             write!(f, "\n  Hint: {}", hint)?;
+        }
+        if let Some(ref table) = self.table_name {
+            if let Some(ref col) = self.column_name {
+                write!(f, "\n  Column: {}.{}", table, col)?;
+            } else {
+                write!(f, "\n  Table: {}", table)?;
+            }
         }
         Ok(())
     }

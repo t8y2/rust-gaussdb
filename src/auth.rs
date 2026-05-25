@@ -148,7 +148,11 @@ impl GaussAuthState {
                     let pwd_str = std::str::from_utf8(&password).unwrap_or("");
                     let md5_sha = md5_sha256_password(&user, pwd_str);
                     hi(md5_sha.as_bytes(), &salt, iterations)
+                } else if mechanism == "SCRAM-SHA-256" {
+                    // Standard SCRAM: use raw password bytes (with SASLprep)
+                    hi(&password, &salt, iterations)
                 } else {
+                    // GaussDB SHA256: pre-hash password with SHA256, then hex-encode
                     let pwd_sha = sha256(&password);
                     let pwd_hex = hex::encode(pwd_sha);
                     hi(pwd_hex.as_bytes(), &salt, iterations)
