@@ -2,6 +2,8 @@ use bytes::{Buf, BufMut, BytesMut};
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
+use crate::error::DbError;
+
 pub struct PgCodec;
 
 pub enum BackendMessage {
@@ -44,7 +46,7 @@ pub enum BackendMessage {
         tag: String,
     },
     ErrorResponse {
-        fields: Vec<(u8, String)>,
+        error: DbError,
     },
     NoticeResponse,
     EmptyQueryResponse,
@@ -115,7 +117,8 @@ impl Decoder for PgCodec {
                     let value = read_cstr(&mut body)?;
                     fields.push((field_type, value));
                 }
-                Ok(Some(BackendMessage::ErrorResponse { fields }))
+                let error = DbError::from_fields(&fields);
+                Ok(Some(BackendMessage::ErrorResponse { error }))
             }
             b'N' => Ok(Some(BackendMessage::NoticeResponse)),
             b'I' => Ok(Some(BackendMessage::EmptyQueryResponse)),

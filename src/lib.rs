@@ -27,8 +27,9 @@ mod config;
 mod connection;
 mod error;
 mod row;
+mod transaction;
 
-pub use client::Client;
+pub use client::{double_quote_identifier, quote_string, Client};
 pub use config::Config;
-pub use error::Error;
-pub use row::Row;
+pub use error::{DbError, Error};
+pub use row::{FromSql, Row, ToSql};

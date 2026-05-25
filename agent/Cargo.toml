@@ -1,0 +1,20 @@
+[package]
+name = "gaussdb-agent"
+version = "0.1.0"
+edition = "2021"
+description = "DBX agent binary for GaussDB — JSON-RPC 2.0 over stdin/stdout"
+
+[lib]
+name = "gaussdb_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gaussdb-agent"
+path = "src/main.rs"
+
+[dependencies]
+rust-gaussdb = { path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "io-util", "time"] }
+uuid = { version = "1", features = ["v4"] }

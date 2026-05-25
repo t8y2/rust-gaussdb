@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "agent"]
+resolver = "2"
+
 [package]
 name = "rust-gaussdb"
 version = "0.1.0"

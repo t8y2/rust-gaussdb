@@ -92,13 +92,8 @@ impl Connection {
                     secret_key = sk;
                 }
                 BackendMessage::ReadyForQuery => break,
-                BackendMessage::ErrorResponse { fields } => {
-                    let msg = fields
-                        .iter()
-                        .find(|(t, _)| *t == b'M')
-                        .map(|(_, v)| v.clone())
-                        .unwrap_or_else(|| "unknown error".to_string());
-                    return Err(Error::Database(msg));
+                BackendMessage::ErrorResponse { error } => {
+                    return Err(Error::Database(error));
                 }
                 BackendMessage::NoticeResponse => {}
                 _ => {}
@@ -152,9 +147,8 @@ async fn authenticate_scram_sha256(
 
     let server_first = match framed.next().await {
         Some(Ok(BackendMessage::AuthenticationSaslContinue { data })) => data,
-        Some(Ok(BackendMessage::ErrorResponse { fields })) => {
-            let msg = extract_error(&fields);
-            return Err(Error::Authentication(msg));
+        Some(Ok(BackendMessage::ErrorResponse { error })) => {
+            return Err(Error::Authentication(error.message));
         }
         _ => return Err(Error::Protocol("expected SaslContinue".into())),
     };
@@ -171,9 +165,8 @@ async fn authenticate_scram_sha256(
                 .process_server_final(&data)
                 .map_err(Error::Authentication)?;
         }
-        Some(Ok(BackendMessage::ErrorResponse { fields })) => {
-            let msg = extract_error(&fields);
-            return Err(Error::Authentication(msg));
+        Some(Ok(BackendMessage::ErrorResponse { error })) => {
+            return Err(Error::Authentication(error.message));
         }
         _ => return Err(Error::Protocol("expected SaslFinal".into())),
     }
@@ -193,9 +186,8 @@ async fn authenticate_gaussdb_sasl(
 
     let server_first = match framed.next().await {
         Some(Ok(BackendMessage::AuthenticationSaslContinue { data })) => data,
-        Some(Ok(BackendMessage::ErrorResponse { fields })) => {
-            let msg = extract_error(&fields);
-            return Err(Error::Authentication(msg));
+        Some(Ok(BackendMessage::ErrorResponse { error })) => {
+            return Err(Error::Authentication(error.message));
         }
         _ => return Err(Error::Protocol("expected SaslContinue".into())),
     };
@@ -213,9 +205,8 @@ async fn authenticate_gaussdb_sasl(
                 .map_err(Error::Authentication)?;
         }
         Some(Ok(BackendMessage::AuthenticationOk)) => {}
-        Some(Ok(BackendMessage::ErrorResponse { fields })) => {
-            let msg = extract_error(&fields);
-            return Err(Error::Authentication(msg));
+        Some(Ok(BackendMessage::ErrorResponse { error })) => {
+            return Err(Error::Authentication(error.message));
         }
         _ => {}
     }
@@ -234,12 +225,4 @@ fn md5_password(user: &str, password: &str, salt: &[u8; 4]) -> String {
     hasher.update(first.as_bytes());
     hasher.update(salt);
     format!("md5{:x}", hasher.finalize())
-}
-
-fn extract_error(fields: &[(u8, String)]) -> String {
-    fields
-        .iter()
-        .find(|(t, _)| *t == b'M')
-        .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| "unknown error".to_string())
 }
