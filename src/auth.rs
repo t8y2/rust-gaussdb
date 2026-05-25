@@ -70,11 +70,6 @@ fn md5_sha256_password(user: &str, password: &str) -> String {
 }
 
 pub enum GaussAuthState {
-    Initial {
-        password: Vec<u8>,
-        user: String,
-        mechanism: String,
-    },
     WaitingForServerFirst {
         password: Vec<u8>,
         user: String,

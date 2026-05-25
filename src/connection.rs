@@ -1,15 +1,25 @@
+use std::pin::Pin;
+
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 use crate::auth::{self, GaussAuthState, GAUSSDB_MD5_SHA256, GAUSSDB_SHA256};
 use crate::codec::*;
-use crate::config::Config;
+use crate::config::{Config, SslMode};
 use crate::error::Error;
 
+pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
+
+type BoxedStream = Pin<Box<dyn AsyncReadWrite>>;
+
 pub struct Connection {
-    pub(crate) framed: Framed<TcpStream, PgCodec>,
+    pub(crate) framed: Framed<BoxedStream, PgCodec>,
+    #[allow(dead_code)]
     pub(crate) process_id: i32,
+    #[allow(dead_code)]
     pub(crate) secret_key: i32,
     pub(crate) parameters: Vec<(String, String)>,
 }
@@ -31,6 +41,13 @@ impl Connection {
         };
 
         stream.set_nodelay(true)?;
+
+        let stream: BoxedStream = if config.ssl_mode == SslMode::Disable {
+            Box::pin(stream)
+        } else {
+            tls_handshake(stream, config).await?
+        };
+
         let mut framed = Framed::new(stream, PgCodec);
 
         let startup = build_startup_message(
@@ -109,8 +126,61 @@ impl Connection {
     }
 }
 
+async fn tls_handshake(stream: TcpStream, config: &Config) -> Result<BoxedStream, Error> {
+    // Send SSLRequest (int32: 8, int32: 80877103)
+    let mut stream = stream;
+    let ssl_request = {
+        let mut buf = Vec::with_capacity(8);
+        buf.extend_from_slice(&8i32.to_be_bytes());
+        buf.extend_from_slice(&80877103i32.to_be_bytes());
+        buf
+    };
+    tokio::io::AsyncWriteExt::write_all(&mut stream, &ssl_request).await?;
+
+    // Read server response: 'S' = yes, 'N' = no
+    let mut response = [0u8; 1];
+    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut response).await?;
+
+    match response[0] {
+        b'S' => {
+            #[cfg(feature = "tls")]
+            {
+                let tls_connector = native_tls::TlsConnector::builder()
+                    .danger_accept_invalid_certs(true)
+                    .build()
+                    .map_err(|e| Error::Tls(e.to_string()))?;
+                let tls_connector: tokio_native_tls::TlsConnector = tls_connector.into();
+                let domain = config.host.clone();
+                let tls_stream = tls_connector
+                    .connect(&domain, stream)
+                    .await
+                    .map_err(|e| Error::Tls(e.to_string()))?;
+                Ok(Box::pin(tls_stream))
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                Err(Error::Config(
+                    "TLS required but gaussdb-rs was built without TLS support (enable 'tls' feature)"
+                        .into(),
+                ))
+            }
+        }
+        b'N' => {
+            if config.ssl_mode == SslMode::Require {
+                Err(Error::Config("TLS required by sslmode=require but server refused".into()))
+            } else {
+                Ok(Box::pin(stream))
+            }
+        }
+        c => Err(Error::Protocol(format!(
+            "unexpected SSL response: {}",
+            c
+        ))),
+    }
+}
+
 async fn authenticate_sasl(
-    framed: &mut Framed<TcpStream, PgCodec>,
+    framed: &mut Framed<BoxedStream, PgCodec>,
     config: &Config,
     mechanisms: &[String],
 ) -> Result<(), Error> {
@@ -137,7 +207,7 @@ async fn authenticate_sasl(
 }
 
 async fn authenticate_scram_sha256(
-    framed: &mut Framed<TcpStream, PgCodec>,
+    framed: &mut Framed<BoxedStream, PgCodec>,
     config: &Config,
 ) -> Result<(), Error> {
     let (mut state, initial_data) =
@@ -175,7 +245,7 @@ async fn authenticate_scram_sha256(
 }
 
 async fn authenticate_gaussdb_sasl(
-    framed: &mut Framed<TcpStream, PgCodec>,
+    framed: &mut Framed<BoxedStream, PgCodec>,
     config: &Config,
     mechanism: &str,
 ) -> Result<(), Error> {

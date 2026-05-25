@@ -62,6 +62,7 @@ pub enum Error {
     Authentication(String),
     Database(DbError),
     Config(String),
+    Tls(String),
 }
 
 impl fmt::Display for Error {
@@ -72,6 +73,7 @@ impl fmt::Display for Error {
             Error::Authentication(msg) => write!(f, "Authentication failed: {msg}"),
             Error::Database(e) => write!(f, "Database error: {e}"),
             Error::Config(msg) => write!(f, "Config error: {msg}"),
+            Error::Tls(msg) => write!(f, "TLS error: {msg}"),
         }
     }
 }

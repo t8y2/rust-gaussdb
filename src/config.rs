@@ -1,5 +1,12 @@
 use crate::error::Error;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SslMode {
+    Disable,
+    Prefer,
+    Require,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub host: String,
@@ -9,6 +16,7 @@ pub struct Config {
     pub dbname: String,
     pub application_name: Option<String>,
     pub connect_timeout: Option<std::time::Duration>,
+    pub ssl_mode: SslMode,
 }
 
 impl Default for Config {
@@ -21,6 +29,7 @@ impl Default for Config {
             dbname: "postgres".to_string(),
             application_name: None,
             connect_timeout: None,
+            ssl_mode: SslMode::Prefer,
         }
     }
 }
@@ -106,7 +115,7 @@ impl Config {
                             config.connect_timeout = Some(std::time::Duration::from_secs(secs));
                         }
                         "sslmode" => {
-                            // Accepted but ignored for now
+                            config.ssl_mode = parse_sslmode(v)?;
                         }
                         _ => {}
                     }
@@ -150,7 +159,7 @@ impl Config {
                         config.connect_timeout = Some(std::time::Duration::from_secs(secs));
                     }
                     "sslmode" => {
-                        // Accepted but ignored for now
+                        config.ssl_mode = parse_sslmode(value)?;
                     }
                     _ => {}
                 }
@@ -228,6 +237,15 @@ fn split_key_value_parts(s: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn parse_sslmode(s: &str) -> Result<SslMode, Error> {
+    match s {
+        "disable" => Ok(SslMode::Disable),
+        "prefer" => Ok(SslMode::Prefer),
+        "require" => Ok(SslMode::Require),
+        _ => Err(Error::Config(format!("invalid sslmode: {}", s))),
+    }
 }
 
 fn percent_decode(s: &str) -> Result<String, Error> {

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "agent"]
+members = ["."]
 resolver = "2"
 
 [package]
@@ -34,9 +34,12 @@ log = "0.4"
 phf = "0.11"
 serde = { version = "1", features = ["derive"], optional = true }
 chrono = { version = "0.4", optional = true }
+native-tls = { version = "0.2", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
 
 [features]
 default = []
+tls = ["native-tls", "tokio-native-tls"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
